@@ -51,14 +51,7 @@ from .utils import (
 if is_peft_available():
     from peft import PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
-def get_parameter_number(net):
-    '''
-    :param net: model class
-    :return: params statistics
-    '''
-    total_num = sum(p.numel() for p in net.parameters())/1000/1000
-    trainable_num = sum(p.numel() for p in net.parameters() if p.requires_grad)/1000/1000
-    return {'Total(M)': total_num, 'Trainable(M)': trainable_num}
+
 class SFTTrainer(Trainer):
     r"""
     Class definition of the Supervised Finetuning Trainer (SFT Trainer).
@@ -153,7 +146,6 @@ class SFTTrainer(Trainer):
         neftune_noise_alpha: Optional[float] = None,
         model_init_kwargs: Optional[Dict] = None,
         dataset_kwargs: Optional[Dict] = None,
-        gating_ft: Optional[bool] = False,
     ):
         if model_init_kwargs is None:
             model_init_kwargs = {}
@@ -171,16 +163,6 @@ class SFTTrainer(Trainer):
                 "`AutoModelForCausalLM` or a `PeftModel` (if you passed a `peft_config`) for you."
             )
             model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
-
-        # add by pyliu
-        if gating_ft:
-            print("before: ",get_parameter_number(model))
-            for name, param in list(model.named_parameters()):
-                if 'gate' in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-            print("after: ",get_parameter_number(model))
 
         if packing and data_collator is not None and isinstance(data_collator, DataCollatorForCompletionOnlyLM):
             raise ValueError(

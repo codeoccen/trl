@@ -55,7 +55,7 @@ from trl import ModelConfig, SFTTrainer, get_kbit_device_map, get_peft_config, g
 import argparse
 
 tqdm.pandas()
-from collections import OrderedDict
+
 
 @dataclass
 class ScriptArguments:
@@ -80,7 +80,6 @@ if __name__ == "__main__":
     parser.add_argument("--peft_lora_alpha", type=int, default=32)
     parser.add_argument("--target_modules", type=str, nargs="+", default=["q_proj","k_proj", "v_proj", "o_proj"])
     parser.add_argument("--load_in_4bit", type=bool, default=True)
-    parser.add_argument("--gating_ft", type=bool, default=False)
     
     args = parser.parse_args()
     #args, model_config = parser.parse_args_into_dataclasses()
@@ -156,15 +155,6 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         packing=True,
         peft_config=get_peft_config(model_config),
-        gating_ft=args.gating_ft
     )
     trainer.train()
-    # Step 6: Save the model
-    if args.gating_ft:
-        gate_state = OrderedDict()
-        for k,v in trainer.model.state_dict().items():
-            if "gate" in k:
-                gate_state[k] = v
-        torch.save(gate_state, training_args.output_dir+"/gate.pth")
-    else:
-        trainer.save_model(training_args.output_dir)
+    trainer.save_model(training_args.output_dir)
