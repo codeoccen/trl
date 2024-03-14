@@ -177,6 +177,8 @@ class SFTTrainer(Trainer):
             print("before: ",get_parameter_number(model))
             for name, param in list(model.named_parameters()):
                 if 'gate' in name:
+                    device = torch.device('cuda:1')
+                    param.data = param.data.to(dtype=torch.float16).to(device)
                     param.requires_grad = True
                 else:
                     param.requires_grad = False
