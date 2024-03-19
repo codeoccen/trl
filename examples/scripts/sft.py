@@ -50,9 +50,15 @@ from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer, HfArgumentParser, TrainingArguments
 
+import sys
+print(sys.path)
+sys.path.append('/home/rzhe/trl2')
+
 from trl import ModelConfig, SFTTrainer, get_kbit_device_map, get_peft_config, get_quantization_config
 
 import argparse
+import os
+
 
 tqdm.pandas()
 from collections import OrderedDict
@@ -63,26 +69,28 @@ class ScriptArguments:
     dataset_text_field: str = field(default="text", metadata={"help": "the text field of the dataset"})
     max_seq_length: int = field(default=512, metadata={"help": "The maximum sequence length for SFT Trainer"})
 
-
+#'/data/liruizhe/trans_1/models--mistralai--Mixtral-8x7B-Instruct-v0.1/snapshots/5c79a376139be989ef1838f360bf4f1f256d7aec'
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='trl')
     parser.add_argument("--model_name", type=str, default='/data/liruizhe/trans_1/models--mistralai--Mixtral-8x7B-Instruct-v0.1/snapshots/5c79a376139be989ef1838f360bf4f1f256d7aec')#"mistralai/Mixtral-8x7B-Instruct-v0.1"
     parser.add_argument("--dataset_name", type=str, default="tatsu-lab/alpaca")#"tatsu-lab/alpaca"trl-lib/ultrachat_200k_chatml
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=10)
-    parser.add_argument("--max_seq_length", type=int, default=2048)
-    parser.add_argument("--learning_rate", type=float, default=2e-4)
-    parser.add_argument("--save_steps", type=int, default=1000000)
-    parser.add_argument("--output_dir", type=str, default="/data/liruizhe/gate_result")
+    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    parser.add_argument("--max_seq_length", type=int, default=512)
+    parser.add_argument("--learning_rate", type=float, default=2e-5)
+    parser.add_argument("--save_steps", type=int, default=200000)
+    parser.add_argument("--output_dir", type=str, default="/data/liruizhe/gate_result/lr2e5")
     parser.add_argument("--use_peft", type=bool, default=False)
     parser.add_argument("--peft_lora_r", type=int, default=8)
     parser.add_argument("--peft_lora_alpha", type=int, default=32)
     parser.add_argument("--target_modules", type=str, nargs="+", default=["q_proj","k_proj", "v_proj", "o_proj"])
-    parser.add_argument("--load_in_4bit", type=bool, default=False)
+    parser.add_argument("--load_in_4bit", type=bool, default=True)
     parser.add_argument("--gating_ft", type=bool, default=True)
     parser.add_argument("--cache_dir", type=str, default="/data/liruizhe/trans_1")
-    parser.add_argument("--low_cpu_mem_usage", type=bool, default=True)
+    parser.add_argument("--low_cpu_mem_usage", type=bool, default=False)
+    parser.add_argument("--mixed_precision", type=str, default="bf16")
+
     args = parser.parse_args()
     #args, model_config = parser.parse_args_into_dataclasses()
 
@@ -102,10 +110,11 @@ if __name__ == "__main__":
         # gradient_checkpointing=args.gradient_checkpointing,
         # TODO: uncomment that on the next release
         # gradient_checkpointing_kwargs=args.gradient_checkpointing_kwargs,
-        # bf16=args.mixed_precision == "bf16"
+        #bf16=args.mixed_precision == "bf16"
     )
     #training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
-    
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
     model_config=ModelConfig(model_name_or_path=args.model_name,use_peft=args.use_peft,lora_r=args.peft_lora_r,lora_alpha=args.peft_lora_alpha,lora_target_modules=args.target_modules,load_in_4bit=args.load_in_4bit)
    
 
@@ -120,24 +129,25 @@ if __name__ == "__main__":
     quantization_config = get_quantization_config(model_config)
     model_kwargs = dict(
         #revision=model_config.model_revision,
-        #trust_remote_code=model_config.trust_remote_code,
+        trust_remote_code=True,
         #attn_implementation=model_config.attn_implementation,
-        #torch_dtype=torch_dtype,
+        torch_dtype=torch.float32,
         cache_dir=args.cache_dir,
         load_in_4bit=args.load_in_4bit,
-        low_cpu_mem_usage=args.low_cpu_mem_usage, 
+        #low_cpu_mem_usage=args.low_cpu_mem_usage, 
+        #device_map="auto",
         #use_cache=False if training_args.gradient_checkpointing else True,
         #device_map=get_kbit_device_map() if quantization_config is not None else None,
         #quantization_config=quantization_config,
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path, use_fast=True,cache_dir=args.cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)#, use_fast=True,cache_dir=args.cache_dir)
     tokenizer.pad_token = tokenizer.eos_token
 
     ################
     # Dataset
     ################
-    #raw_datasets = load_dataset(args.dataset_name)
-    raw_datasets =load_dataset(args.dataset_name) #load_dataset("/home/rzhe/.cache/huggingface/datasets/tatsu-lab___alpaca")
+    #raw_datasets = load_dataset(args.dataset_name)load_dataset(args.dataset_name,cache_dir=args.cache_dir)#/home/rzhe/.cache/huggingface/datasets/tatsu-lab___alpaca
+    raw_datasets =load_dataset('/home/rzhe/.cache/huggingface/datasets/tatsu-lab___alpaca/default/0.0.0/dce01c9b08f87459cf36a430d809084718273017')#"/data/liruizhe/trans_data/tatsu-lab___alpaca/default/0.0.0/dce01c9b08f87459cf36a430d809084718273017")#"/home/rzhe/.cache/huggingface/datasets/tatsu-lab___alpaca/default/0.0.0/dce01c9b08f87459cf36a430d809084718273017")
     train_dataset = raw_datasets["train"]
     
     #eval_dataset = raw_datasets["test"]
