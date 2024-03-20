@@ -1,59 +1,36 @@
 #!/bin/bash
-# This script runs an SFT example end-to-end on a tiny model using different possible configurations
-# but defaults to QLoRA + PEFT
-OUTPUT_DIR="test_sft/"
-MODEL_NAME="HuggingFaceM4/tiny-random-LlamaForCausalLM"
-DATASET_NAME="imdb"
-MAX_STEPS=5
-BATCH_SIZE=2
-SEQ_LEN=128
+CUDA_VISIBLE_DEVICES=3
+model_name="/data/liruizhe/trans_1/models--mistralai--Mixtral-8x7B-Instruct-v0.1/snapshots/5c79a376139be989ef1838f360bf4f1f256d7aec"
+dataset_name="tatsu-lab/alpaca"
+batch_size=2
+gradient_accumulation_steps=4
+max_seq_length=512
+learning_rate=2e-4
+save_steps=200000
+output_dir="/data/liruizhe/gate_result/lr2e5"
+use_peft=false
+peft_lora_r=8
+peft_lora_alpha=32
+load_in_4bit=true
+gating_ft=true
+cache_dir="/data/liruizhe/trans_1"
+low_cpu_mem_usage=false
+mixed_precision="bf16"
 
-
-# Handle extra arguments in case one passes accelerate configs.
-EXTRA_ACCELERATE_ARGS=""
-EXTRA_TRAINING_ARGS="""--use_peft \
-    --load_in_4bit
-"""
-
-# Set your number of GPUs here
-NUM_GPUS=2
-
-if [[ "${TRL_ACCELERATE_CONFIG}" == "" ]]; then
-  EXTRA_ACCELERATE_ARGS=""
-else
-  EXTRA_ACCELERATE_ARGS="--config_file $TRL_ACCELERATE_CONFIG"
-  # For DeepSpeed configs we need to set the `--fp16` flag to comply with our configs exposed
-  # on `examples/accelerate_configs` and our runners do not support bf16 mixed precision training.
-  if [[ $TRL_ACCELERATE_CONFIG == *"deepspeed"* ]]; then
-    EXTRA_TRAINING_ARGS="--fp16"
-  else
-    echo "Keeping QLoRA + PEFT"
-  fi
-fi
-
-
-CMD="""
-accelerate launch $EXTRA_ACCELERATE_ARGS \
-    --num_processes $NUM_GPUS \
-    --mixed_precision 'fp16' \
-    `pwd`/examples/scripts/sft.py \
-    --model_name $MODEL_NAME \
-    --dataset_name $DATASET_NAME \
-    --output_dir $OUTPUT_DIR \
-    --max_steps $MAX_STEPS \
-    --per_device_train_batch_size $BATCH_SIZE \
-    --max_seq_length $SEQ_LEN \
-    $EXTRA_TRAINING_ARGS
-"""
-
-echo "Starting program..."
-
-{ # try
-    echo $CMD
-    eval "$CMD"
-} || { # catch
-    # save log for exception 
-    echo "Operation Failed!"
-    exit 1
-}
-exit 0
+CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python ./examples/scripts/sft.py \
+    --model_name "$model_name" \
+    --dataset_name "$dataset_name" \
+    --batch_size $batch_size \
+    --gradient_accumulation_steps $gradient_accumulation_steps \
+    --max_seq_length $max_seq_length \
+    --learning_rate $learning_rate \
+    --save_steps $save_steps \
+    --output_dir "$output_dir" \
+    --use_peft $use_peft \
+    --peft_lora_r $peft_lora_r \
+    --peft_lora_alpha $peft_lora_alpha \
+    --load_in_4bit $load_in_4bit \
+    --gating_ft $gating_ft \
+    --cache_dir "$cache_dir" \
+    --low_cpu_mem_usage $low_cpu_mem_usage \
+    --mixed_precision "$mixed_precision"
