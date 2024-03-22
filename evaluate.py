@@ -27,7 +27,7 @@ except:  # noqa: E722
 
 
 def main(
-        load_8bit: bool = False,
+        load_4bit: bool = False,
         base_model: str = "",
         lora_weights: str = "tloen/alpaca-lora-7b",
         share_gradio: bool = False,
@@ -178,15 +178,15 @@ def load_data(args) -> list:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', choices=['AddSub', 'MultiArith', 'SingleEq', 'gsm8k', 'AQuA', 'SVAMP'],
-                        required=True)
-    parser.add_argument('--model', choices=['LLaMA-7B', 'BLOOM-7B', 'GPT-j-6B'], required=True)
-    parser.add_argument('--adapter', choices=['LoRA', 'AdapterP', 'AdapterH', 'Parallel', 'Prefix'],
-                        required=True)
-    parser.add_argument('--base_model', required=True)
-    parser.add_argument('--lora_weights', required=True)
-    parser.add_argument('--load_8bit', action='store_true', default=False)
-
+    parser.add_argument('--dataset', default="gsm8k",choices=['AddSub', 'MultiArith', 'SingleEq', 'gsm8k', 'AQuA', 'SVAMP'])
+    parser.add_argument('--model',default="mistralai/Mixtral-8x7B-Instruct-v0.1", choices=['LLaMA-7B', 'BLOOM-7B', 'GPT-j-6B'])
+    parser.add_argument('--adapter',default="LoRA", choices=['LoRA', 'AdapterP', 'AdapterH', 'Parallel', 'Prefix'])
+    parser.add_argument('--base_model',default="mistralai/Mixtral-8x7B-Instruct-v0.1")
+    parser.add_argument('--lora', default=False)
+    parser.add_argument('--lora_weights',default="/home/rzhe/LLM-Adapters/trained_models/Mixtral-8x7B-Instruct-v0.1/checkpoint-1800")#"/data/liruizhe/trans_result"
+    parser.add_argument('--load_4bit', default=True)
+    parser.add_argument('--gate', default=True)
+    parser.add_argument('--gate_weights',default="/home/rzhe/LLM-Adapters/trained_models/Mixtral-8x7B-Instruct-v0.1/gate.pth")
     return parser.parse_args()
 
 
@@ -206,37 +206,46 @@ def load_model(args) -> tuple:
     if not lora_weights:
         raise ValueError(f'can not find lora weight, the value is: {lora_weights}')
 
-    load_8bit = args.load_8bit
+    load_4bit = args.load_4bit
     if args.model == 'LLaMA-7B':
         tokenizer = LlamaTokenizer.from_pretrained(base_model)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        tokenizer = AutoTokenizer.from_pretrained(base_model,cache_dir="/data/liruizhe/trans_1")
     if device == "cuda":
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
-            load_in_8bit=load_8bit,
+            load_in_4bit=load_4bit,
             torch_dtype=torch.float16,
             device_map="auto",
-            trust_remote_code=True,
+            trust_remote_code=True,cache_dir="/data/liruizhe/trans_1",bnb_4bit_compute_dtype=torch.float16,
         ) # fix zwq
-        model = PeftModel.from_pretrained(
-            model,
-            lora_weights,
-            torch_dtype=torch.float16,
-            device_map={"":0}
-        )
+        # if args.lora:
+        #     model = PeftModel.from_pretrained(
+        #         model,
+        #         lora_weights,
+        #         #torch_dtype=torch.float16,
+        #         device_map={"":0}
+        #     )
+        if args.gate:
+            custom_weights = torch.load(args.gate_weights)
+            for name, param in model.named_parameters():
+                if "gate" in name:
+                    print(f"Replacing weights for: {name}")
+                    print(torch.sum(custom_weights[name])) 
+                    print(torch.sum(param.data)) 
+                    param.data = 0.5*param.data+0.5*custom_weights[name].to(torch.float16)
     elif device == "mps":
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
             device_map={"": device},
             torch_dtype=torch.float16,
         )
-        model = PeftModel.from_pretrained(
-            model,
-            lora_weights,
-            device_map={"": device},
-            torch_dtype=torch.float16,
-        )
+        # model = PeftModel.from_pretrained(
+        #     model,
+        #     lora_weights,
+        #     device_map={"": device},
+        #     torch_dtype=torch.float16,
+        # )
     else:
         model = AutoModelForCausalLM.from_pretrained(
             base_model, device_map={"": device}, low_cpu_mem_usage=True
@@ -252,12 +261,12 @@ def load_model(args) -> tuple:
         model.config.bos_token_id = 1
         model.config.eos_token_id = 2
 
-        if not load_8bit:
+        if not load_4bit:
             model.half()  # seems to fix bugs for some users.
 
         model.eval()
-        if torch.__version__ >= "2" and sys.platform != "win32":
-            model = torch.compile(model)
+        # if torch.__version__ >= "2" and sys.platform != "win32":
+        #     model = torch.compile(model)
 
     return tokenizer, model
 

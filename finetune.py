@@ -7,7 +7,7 @@ import torch
 import transformers
 from datasets import load_dataset
 from typing import List, Optional, Union
-
+from collections import OrderedDict
 """
 Unused imports:
 import torch.nn as nn
@@ -16,7 +16,6 @@ import bitsandbytes as bnb
 sys.path.append(os.path.join(os.getcwd(), "peft/src/"))
 from peft import (  # noqa: E402
     LoraConfig,
-    BottleneckConfig,
     PrefixTuningConfig,
     get_peft_model,
     get_peft_model_state_dict,
@@ -32,7 +31,7 @@ def train(
         data_path: str = "yahma/alpaca-cleaned",
         output_dir: str = "./lora-alpaca",
         adapter_name: str = "lora",
-        load_8bit : bool = False,
+        load_4bit : bool = True,
         # training hyperparams
         batch_size: int = 128,
         micro_batch_size: int = 4,
@@ -41,8 +40,8 @@ def train(
         cutoff_len: int = 256,
         val_set_size: int = 2000,
         use_gradient_checkpointing: bool = False,
-        eval_step: int = 200,
-        save_step: int = 200,
+        eval_step: int = 20000,
+        save_step: int = 20000,
         # lora hyperparams
         lora_r: int = 8,
         lora_alpha: int = 16,
@@ -67,6 +66,7 @@ def train(
         wandb_watch: str = "",  # options: false | gradients | all
         wandb_log_model: str = "",  # options: false | true
         resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
+        gating_ft=True
 ):
     print(
         f"Finetuning model with params:\n"
@@ -124,10 +124,10 @@ def train(
     if len(wandb_log_model) > 0:
         os.environ["WANDB_LOG_MODEL"] = wandb_log_model
 
-    if load_8bit:
+    if load_4bit:
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
-            load_in_8bit=load_8bit,
+            load_in_4bit=load_4bit,
             torch_dtype=torch.float16,
             device_map=device_map,
             trust_remote_code=True,
@@ -135,7 +135,7 @@ def train(
     else:
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
-            load_in_8bit=False,
+            load_in_4bit=False,
             torch_dtype=torch.float16,
             device_map={"": int(os.environ.get("LOCAL_RANK") or 0)},
             trust_remote_code=True,
@@ -145,7 +145,7 @@ def train(
         # Due to the name of transformers' LlamaTokenizer, we have to do this
         tokenizer = LlamaTokenizer.from_pretrained(base_model)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(base_model,trust_remote_code=True)
 
     tokenizer.pad_token_id = (
         0  # unk. we want this to be different from the eos token
@@ -177,7 +177,14 @@ def train(
             return {"input_ids": result["input_ids"], "labels": result["labels"]}
         else:
             return result
-
+    def get_parameter_number(net):
+        '''
+        :param net: model class
+        :return: params statistics
+        '''
+        total_num = sum(p.numel() for p in net.parameters())/1000/1000
+        trainable_num = sum(p.numel() for p in net.parameters() if p.requires_grad)/1000/1000
+        return {'Total(M)': total_num, 'Trainable(M)': trainable_num}
     def generate_and_tokenize_prompt(data_point):
         full_prompt = generate_prompt(data_point)
         tokenized_full_prompt = tokenize(full_prompt)
@@ -194,35 +201,25 @@ def train(
         return tokenized_full_prompt
 
     model = prepare_model_for_int8_training(model, use_gradient_checkpointing=use_gradient_checkpointing)
-    if adapter_name == "lora":
-        config = LoraConfig(
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            target_modules=target_modules,
-            lora_dropout=lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-    elif adapter_name == "bottleneck":
-        config = BottleneckConfig(
-            bottleneck_size=bottleneck_size,
-            non_linearity=non_linearity,
-            adapter_dropout=adapter_dropout,
-            use_parallel_adapter=use_parallel_adapter,
-            use_adapterp=use_adapterp,
-            target_modules=target_modules,
-            scaling=scaling,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-    elif adapter_name == "prefix-tuning":
-        config = PrefixTuningConfig(
-            num_virtual_tokens=num_virtual_tokens,
-            task_type="CAUSAL_LM",
-        )
-    model = get_peft_model(model, config)
-    if adapter_name == "prefix-tuning":
-        model.to('cuda')
+    if adapter_name!='no_adapter':
+        if adapter_name == "lora":
+            config = LoraConfig(
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                target_modules=target_modules,
+                lora_dropout=lora_dropout,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+        
+        elif adapter_name == "prefix-tuning":
+            config = PrefixTuningConfig(
+                num_virtual_tokens=num_virtual_tokens,
+                task_type="CAUSAL_LM",
+            )
+        model = get_peft_model(model, config)
+        if adapter_name == "prefix-tuning":
+            model.to('cuda')
 
     if data_path.endswith(".json"):  # todo: support jsonl
         data = load_dataset("json", data_files=data_path)
@@ -248,8 +245,18 @@ def train(
             model = set_peft_model_state_dict(model, adapters_weights)
         else:
             print(f"Checkpoint {checkpoint_name} not found")
-
-    model.print_trainable_parameters()  # Be more transparent about the % of trainable params.
+    if gating_ft:
+        print("after: ",get_parameter_number(model))
+        for name, param in list(model.named_parameters()):
+            if 'gate' in name:
+                #device = torch.device('cuda:0')
+                #param.data = param.data.to(dtype=torch.float16)#.to(device)
+    
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+        print("after: ",get_parameter_number(model))
+    # model.print_trainable_parameters()  # Be more transparent about the % of trainable params.
 
     if val_set_size > 0:
         train_val = data["train"].train_test_split(
@@ -302,18 +309,26 @@ def train(
     model.config.use_cache = False
 
     old_state_dict = model.state_dict
-    model.state_dict = (
-        lambda self, *_, **__: get_peft_model_state_dict(
-            self, old_state_dict()
-        )
-    ).__get__(model, type(model))
+    # model.state_dict = (
+    #     lambda self, *_, **__: get_peft_model_state_dict(
+    #         self, old_state_dict()
+    #     )
+    # ).__get__(model, type(model))
 
     if torch.__version__ >= "2" and sys.platform != "win32":
         model = torch.compile(model)
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
-    model.save_pretrained(output_dir)
+    #model.save_pretrained(output_dir)
+    if gating_ft:
+        gate_state = OrderedDict()
+        for k,v in trainer.model.state_dict().items():
+            if "gate" in k:
+                gate_state[k] = v
+        torch.save(gate_state, output_dir+"/gate.pth")
+    else:
+        trainer.save_model(output_dir)
 
     print(
         "\n If there's a warning about missing keys above, please disregard :)"
@@ -344,4 +359,26 @@ def generate_prompt(data_point):
 
 
 if __name__ == "__main__":
-    fire.Fire(train)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--base_model', type=str, required=True)
+    parser.add_argument('--data_path', type=str, required=True)
+    parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--micro_batch_size', type=int, default=2)
+    parser.add_argument('--num_epochs', type=int, default=3)
+    parser.add_argument('--learning_rate', type=float, default=2e-4)
+    parser.add_argument('--cutoff_len', type=int, default=256)
+    parser.add_argument('--val_set_size', type=int, default=120)
+    parser.add_argument('--adapter_name', type=str, default='no_adapter')
+    parser.add_argument('--use_gradient_checkpointing', type=bool, default=True)
+    parser.add_argument('--load_4bit', type=bool, default=True)
+    parser.add_argument('--gating_ft', type=bool, default=True)
+
+    args = parser.parse_args()
+    train(base_model=args.base_model,data_path=args.data_path,output_dir=args.output_dir,batch_size=args.batch_size,
+          micro_batch_size=args.micro_batch_size,num_epochs=args.num_epochs,learning_rate=args.learning_rate,cutoff_len=args.cutoff_len,
+          val_set_size=args.val_set_size,adapter_name=args.adapter_name,use_gradient_checkpointing=args.use_gradient_checkpointing,load_4bit=args.load_4bit,
+          gating_ft=args.gating_ft)
