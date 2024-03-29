@@ -38,10 +38,10 @@ def train(
         num_epochs: int = 3,
         learning_rate: float = 3e-4,
         cutoff_len: int = 256,
-        val_set_size: int = 2000,
+        val_set_size: int = 200,
         use_gradient_checkpointing: bool = False,
-        eval_step: int = 20000,
-        save_step: int = 20000,
+        eval_step: int = 100,
+        save_step: int = 100,
         # lora hyperparams
         lora_r: int = 8,
         lora_alpha: int = 16,
@@ -66,7 +66,7 @@ def train(
         wandb_watch: str = "",  # options: false | gradients | all
         wandb_log_model: str = "",  # options: false | true
         resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
-        gating_ft=True
+        gating_ft: bool=False
 ):
     print(
         f"Finetuning model with params:\n"
@@ -99,7 +99,10 @@ def train(
         f"wandb_watch: {wandb_watch}\n"
         f"wandb_log_model: {wandb_log_model}\n"
         f"resume_from_checkpoint: {resume_from_checkpoint}\n"
+        f"gating_ft: {gating_ft}\n"
     )
+
+ 
     assert (
         base_model
     ), "Please specify a --base_model, e.g. --base_model='decapoda-research/llama-7b-hf'"
@@ -245,17 +248,19 @@ def train(
             model = set_peft_model_state_dict(model, adapters_weights)
         else:
             print(f"Checkpoint {checkpoint_name} not found")
-    if gating_ft:
-        print("after: ",get_parameter_number(model))
-        for name, param in list(model.named_parameters()):
-            if 'gate' in name:
-                #device = torch.device('cuda:0')
-                #param.data = param.data.to(dtype=torch.float16)#.to(device)
+
+    # if gating_ft:
+    #     print("after: ",get_parameter_number(model))
+    #     for name, param in list(model.named_parameters()):
+    #         if 'gate' in name:
+    #             #device = torch.device('cuda:0')
+    #             #param.data = param.data.to(dtype=torch.float16)#.to(device)
     
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
-        print("after: ",get_parameter_number(model))
+    #             param.requires_grad = True
+    #         else:
+    #             param.requires_grad = False
+    #     print("after: ",get_parameter_number(model))
+            
     # model.print_trainable_parameters()  # Be more transparent about the % of trainable params.
 
     if val_set_size > 0:
@@ -321,14 +326,16 @@ def train(
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     #model.save_pretrained(output_dir)
-    if gating_ft:
-        gate_state = OrderedDict()
-        for k,v in trainer.model.state_dict().items():
-            if "gate" in k:
-                gate_state[k] = v
-        torch.save(gate_state, output_dir+"/gate.pth")
-    else:
-        trainer.save_model(output_dir)
+
+
+    # if gating_ft:
+    #     gate_state = OrderedDict()
+    #     for k,v in trainer.model.state_dict().items():
+    #         if "gate" in k:
+    #             gate_state[k] = v
+    #     torch.save(gate_state, output_dir+"/gate.pth")
+    # else:
+    trainer.save_model(output_dir)
 
     print(
         "\n If there's a warning about missing keys above, please disregard :)"
@@ -372,13 +379,15 @@ if __name__ == "__main__":
     parser.add_argument('--learning_rate', type=float, default=2e-4)
     parser.add_argument('--cutoff_len', type=int, default=256)
     parser.add_argument('--val_set_size', type=int, default=120)
-    parser.add_argument('--adapter_name', type=str, default='no_adapter')
+    parser.add_argument('--adapter_name', type=str, default='lora')
     parser.add_argument('--use_gradient_checkpointing', type=bool, default=True)
     parser.add_argument('--load_4bit', type=bool, default=True)
-    parser.add_argument('--gating_ft', type=bool, default=True)
+    parser.add_argument('--gating_ft', type=bool, default=False)
 
     args = parser.parse_args()
+    
     train(base_model=args.base_model,data_path=args.data_path,output_dir=args.output_dir,batch_size=args.batch_size,
           micro_batch_size=args.micro_batch_size,num_epochs=args.num_epochs,learning_rate=args.learning_rate,cutoff_len=args.cutoff_len,
           val_set_size=args.val_set_size,adapter_name=args.adapter_name,use_gradient_checkpointing=args.use_gradient_checkpointing,load_4bit=args.load_4bit,
           gating_ft=args.gating_ft)
+    
